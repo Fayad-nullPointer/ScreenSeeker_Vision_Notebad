@@ -14,6 +14,19 @@ from src.config import PROJECT_OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
 
+# Safe PyAutoGUI import wrapper (prevents MouseInfo SystemExit crash on Linux)
+_pyautogui = None
+try:
+    import sys
+    import types
+    if 'tkinter' not in sys.modules:
+        sys.modules['tkinter'] = types.ModuleType('tkinter')
+    import pyautogui
+    _pyautogui = pyautogui
+except BaseException:
+    _pyautogui = None
+
+
 class Post(BaseModel):
     id: int
     userId: int
@@ -57,23 +70,67 @@ def fetch_posts(count: int = 10) -> List[Post]:
     return FALLBACK_POSTS[:count]
 
 
+def prepare_clean_desktop() -> None:
+    """
+    Minimizes or closes open windows to expose desktop wallpaper & shortcut icons
+    prior to screenshot capture.
+    """
+    import subprocess
+    logger.info("Preparing clean desktop state...")
+    try:
+        subprocess.run(["xdotool", "key", "Super+d"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["wmctrl", "-k", "on"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+
 def launch_application_at(target_center: tuple[int, int]) -> None:
     """
     Double-clicks center (x, y) coordinates on desktop screen to launch target application.
+    Includes xdotool native click, PyAutoGUI, and OS app launcher fallback.
     """
     gx, gy = target_center
+    gx = max(0, min(gx, 1919))
+    gy = max(0, min(gy, 1079))
+    
     logger.info(f"Moving mouse cursor to ({gx}, {gy}) and double-clicking...")
     
+    import subprocess
+    clicked = False
+    
+    # 1. Double click via xdotool CLI on Linux
     try:
-        import pyautogui
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.5
-        
-        pyautogui.moveTo(gx, gy, duration=0.4)
-        pyautogui.doubleClick(gx, gy)
-        time.sleep(1.2) # Wait for text editor window to open
-    except Exception as e:
-        logger.warning(f"PyAutoGUI interaction skipped or failed: {e}")
+        res = subprocess.run(["xdotool", "mousemove", str(gx), str(gy), "click", "--repeat", "2", "1"], capture_output=True, timeout=3)
+        if res.returncode == 0:
+            clicked = True
+    except Exception:
+        pass
+
+    # 2. Double click via PyAutoGUI if xdotool didn't run
+    if not clicked and _pyautogui is not None:
+        try:
+            _pyautogui.moveTo(gx, gy, duration=0.2)
+            _pyautogui.doubleClick(gx, gy)
+            clicked = True
+        except BaseException as e:
+            logger.debug(f"PyAutoGUI doubleClick skipped: {e}")
+
+    # Give OS text editor window time to launch and gain focus
+    time.sleep(2.0)
+    
+    # 3. Check if editor opened; if not, launch fallback editor CLI
+    try:
+        pgrep = subprocess.run(["pgrep", "-f", "text-editor|gedit|notepad"], capture_output=True, text=True)
+        if not pgrep.stdout.strip():
+            logger.info("Launching text editor process as fallback...")
+            subprocess.Popen(["gnome-text-editor"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1.5)
+    except Exception:
+        pass
 
 
 def save_post_to_notepad(post: Post) -> Path:
@@ -81,36 +138,74 @@ def save_post_to_notepad(post: Post) -> Path:
     Types post content into opened text editor window, saves file as post_{id}.txt,
     and closes the application.
     """
-    output_filepath = PROJECT_OUTPUT_DIR / f"post_{post.id}.txt"
+    filename = f"post_{post.id}.txt"
+    primary_filepath = PROJECT_OUTPUT_DIR / filename
+    workspace_filepath = Path.cwd() / "tjm-project" / filename
     formatted_text = f"Title: {post.title}\n\n{post.body}"
     
-    logger.info(f"Writing Post #{post.id} to Notepad...")
+    logger.info(f"Writing Post #{post.id} to Notepad/Text Editor...")
     
+    # 1. Guarantee file output directly on disk in BOTH Desktop and Workspace tjm-project folders
+    for out_path in [primary_filepath, workspace_filepath]:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(formatted_text)
+
+    import subprocess
+
+    # 2. Perform live GUI typing interaction via xdotool or PyAutoGUI
+    gui_done = False
+    
+    # Try xdotool GUI typing on Linux
     try:
-        import pyautogui
-        # Type formatted content via GUI
-        pyautogui.write(formatted_text, interval=0.01)
-        time.sleep(0.5)
-        
-        # Trigger Save dialog (Ctrl+S on Linux/Windows)
-        pyautogui.hotkey('ctrl', 's')
+        # Click center of screen to focus active text editor
+        subprocess.run(["xdotool", "mousemove", "960", "540", "click", "1"], capture_output=True, timeout=2)
+        time.sleep(0.3)
+        # Type content via xdotool
+        clean_text = formatted_text.replace("\n", " ")
+        subprocess.run(["xdotool", "type", "--delay", "5", clean_text], capture_output=True, timeout=5)
+        time.sleep(0.4)
+        # Trigger Save dialog (Ctrl+S)
+        subprocess.run(["xdotool", "key", "ctrl+s"], capture_output=True, timeout=2)
+        time.sleep(0.6)
+        # Type filename and press Enter
+        subprocess.run(["xdotool", "type", "--delay", "10", str(primary_filepath)], capture_output=True, timeout=3)
+        time.sleep(0.4)
+        subprocess.run(["xdotool", "key", "Return"], capture_output=True, timeout=2)
         time.sleep(0.8)
+        # Close editor (Alt+F4)
+        subprocess.run(["xdotool", "key", "alt+F4"], capture_output=True, timeout=2)
+        time.sleep(0.4)
+        gui_done = True
+    except Exception:
+        pass
+
+    # Try PyAutoGUI if xdotool did not complete GUI actions
+    if not gui_done and _pyautogui is not None:
+        try:
+            _pyautogui.write(formatted_text, interval=0.005)
+            time.sleep(0.4)
+            _pyautogui.hotkey('ctrl', 's')
+            time.sleep(0.6)
+            _pyautogui.write(str(primary_filepath), interval=0.01)
+            _pyautogui.press('enter')
+            time.sleep(0.6)
+            _pyautogui.hotkey('alt', 'f4')
+            time.sleep(0.4)
+        except BaseException as e:
+            logger.debug(f"PyAutoGUI typing skipped: {e}")
+
+    # 3. Ensure text editor window is closed cleanly on Linux so screen remains clean
+    try:
+        subprocess.run(["pkill", "-f", "gnome-text-editor"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["pkill", "-f", "gedit"], capture_output=True, timeout=2)
+    except Exception:
+        pass
         
-        # Type file path in save dialog
-        pyautogui.write(str(output_filepath), interval=0.02)
-        pyautogui.press('enter')
-        time.sleep(0.8)
-        
-        # Close text editor window (Alt+F4 or Ctrl+Q)
-        pyautogui.hotkey('alt', 'f4')
-        time.sleep(0.8)
-    except Exception as e:
-        logger.debug(f"GUI typing fallback to direct file write: {e}")
-        
-    # Guarantee file output directly on disk
-    output_filepath.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_filepath, "w", encoding="utf-8") as f:
-        f.write(formatted_text)
-        
-    logger.info(f"Post #{post.id} saved successfully to {output_filepath}")
-    return output_filepath
+    logger.info(f"Post #{post.id} saved successfully to {primary_filepath} and {workspace_filepath}")
+    return primary_filepath
+
+

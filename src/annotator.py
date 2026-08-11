@@ -26,6 +26,14 @@ def draw_grounding_annotations(
     gx, gy = target_center
     x1, y1, x2, y2 = target_box
     
+    # Ensure bounding box has valid width and height for visualization
+    if x2 <= x1 + 10:
+        x2 = max(x1 + 60, gx + 30)
+        x1 = max(0, gx - 30)
+    if y2 <= y1 + 10:
+        y2 = max(y1 + 60, gy + 30)
+        y1 = max(0, gy - 30)
+
     # 1. Draw target bounding box (Bright Cyan/Green outline)
     draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 200, 255), width=4)
     
@@ -35,10 +43,11 @@ def draw_grounding_annotations(
     draw.line([gx - 15, gy, gx + 15, gy], fill=(255, 255, 255, 255), width=2)
     draw.line([gx, gy - 15, gx, gy + 15], fill=(255, 255, 255, 255), width=2)
     
-    # 3. Draw Text Badge
+    # 3. Draw Text Badge above bounding box
     badge_text = f"GROUNDED: {label} ({gx}, {gy})"
-    draw.rectangle([x1, max(0, y1 - 30), x1 + 320, y1], fill=(0, 150, 120, 220))
-    draw.text((x1 + 10, max(5, y1 - 25)), badge_text, fill=(255, 255, 255, 255))
+    badge_y1 = max(5, y1 - 28)
+    draw.rectangle([x1, badge_y1, x1 + 340, badge_y1 + 25], fill=(0, 150, 120, 230))
+    draw.text((x1 + 10, badge_y1 + 4), badge_text, fill=(255, 255, 255, 255))
 
     composite = Image.alpha_composite(annotated, overlay)
     return composite.convert("RGB")
@@ -57,7 +66,7 @@ def save_annotated_deliverable(
         screenshot,
         target_center,
         target_box,
-        label=f"Notepad ({position_name})"
+        label=position_name
     )
     
     output_path = ANNOTATED_OUTPUT_DIR / f"annotated_{position_name.lower().replace('-', '_')}.png"

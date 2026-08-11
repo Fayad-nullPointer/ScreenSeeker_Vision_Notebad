@@ -1,5 +1,6 @@
 """
 Main Entrypoint Script for Vision-Based Desktop Automation with ScreenSeekeR Grounding
+Supports generalized dynamic icon selection based on user criteria / prompts.
 """
 
 import sys
@@ -18,20 +19,20 @@ logger = logging.getLogger("main")
 from src.config import PROJECT_OUTPUT_DIR, ANNOTATED_OUTPUT_DIR
 from src.screen import capture_desktop_screenshot
 from src.screen_seeker import visual_search
-from src.automation import fetch_posts, launch_application_at, save_post_to_notepad
+from src.automation import fetch_posts, launch_application_at, save_post_to_notepad, prepare_clean_desktop
 from src.annotator import save_annotated_deliverable
 from src.simulator import create_synthetic_desktop_image
 
 
-def generate_annotated_deliverables():
+def generate_annotated_deliverables(target_icon: str = "Notepad"):
     """
-    Generates the 3 mandatory deliverable annotated screenshots showing icon detection in:
+    Generates the 3 mandatory deliverable annotated screenshots showing target icon detection in:
       1. Top-Left area (150, 150)
       2. Bottom-Right area (1700, 900)
       3. Center of screen (960, 540)
     """
     logger.info("==================================================================")
-    logger.info("Generating Mandatory Deliverable Annotated Screenshots (ScreenSeekeR)")
+    logger.info(f"Generating Annotated Screenshots for Target Icon: '{target_icon}'")
     logger.info("==================================================================")
     
     test_positions = [
@@ -42,61 +43,91 @@ def generate_annotated_deliverables():
     
     saved_paths = []
     for pos_label, pos_coords, true_box in test_positions:
-        logger.info(f"Running ScreenSeekeR Visual Search for scenario: {pos_label} at {pos_coords}...")
+        logger.info(f"Running ScreenSeekeR Visual Search for '{target_icon}' [{pos_label} at {pos_coords}]...")
         
         # Create synthetic desktop screenshot for test harness
-        sim_image = create_synthetic_desktop_image(pos_coords, "Notepad")
+        sim_image = create_synthetic_desktop_image(pos_coords, target_label=target_icon)
         
-        # Execute ScreenSeekeR visual search algorithm
-        (target_x, target_y), target_box, trace = visual_search("Notepad shortcut icon", sim_image)
+        # Execute ScreenSeekeR visual search algorithm for user's requested icon
+        (target_x, target_y), target_box, trace = visual_search(f"{target_icon} shortcut icon", sim_image)
         
         logger.info(f"ScreenSeekeR Result [{pos_label}]: Grounded Center=({target_x}, {target_y}), Box={target_box}")
         
         # Save deliverable annotated image
-        output_path = save_annotated_deliverable(sim_image, (target_x, target_y), target_box, pos_label)
+        output_path = save_annotated_deliverable(sim_image, (target_x, target_y), target_box, f"{target_icon}_{pos_label}")
         saved_paths.append(output_path)
         logger.info(f"Saved annotated screenshot: {output_path}")
         
-    logger.info("All 3 deliverable annotated screenshots generated successfully!")
+    logger.info(f"All deliverable annotated screenshots for '{target_icon}' generated successfully!")
     return saved_paths
 
 
-def run_automation_loop(sim_mode: bool = False):
+def ground_custom_user_icon(target_icon_prompt: str):
     """
-    Executes full 10-post automation loop:
-      1. Fetch 10 posts from JSONPlaceholder API.
-      2. For each post:
-         - Capture desktop screenshot.
-         - Run ScreenSeekeR to ground Notepad icon -> get (x, y).
-         - Double-click to launch Notepad.
-         - Write formatted post content and save as post_{id}.txt in Desktop/tjm-project/.
-         - Close Notepad and repeat.
+    Generalized Grounder: Dynamically detects and grounds ANY user-requested desktop icon or UI element
+    (e.g., 'Recycle Bin', 'File Explorer', 'Chrome', 'Notepad', 'VS Code', etc.)
     """
     logger.info("==================================================================")
-    logger.info("Starting Vision-Based Automation Loop (10 JSONPlaceholder Posts)")
+    logger.info(f"Generalized Icon Grounder - Request: '{target_icon_prompt}'")
+    logger.info("==================================================================")
+    
+    import time
+    logger.info(">>> Minimize all windows and show your desktop NOW! Capturing in 3 seconds...")
+    for i in range(3, 0, -1):
+        logger.info(f"    {i}...")
+        time.sleep(1)
+    logger.info("    Capturing live desktop screenshot!")
+    screenshot = capture_desktop_screenshot()
+        
+    logger.info(f"Searching for target icon matching criteria: '{target_icon_prompt}'...")
+    res = visual_search(target_icon_prompt, screenshot)
+    if res and res[0] is not None:
+        (target_x, target_y), target_box, trace = res
+        logger.info(f"Successfully Grounded '{target_icon_prompt}'!")
+        logger.info(f"Center Coordinates: (X={target_x}, Y={target_y})")
+        logger.info(f"Bounding Box: {target_box}")
+        
+        output_path = save_annotated_deliverable(screenshot, (target_x, target_y), target_box, f"custom_{target_icon_prompt.replace(' ', '_')}")
+        logger.info(f"Saved annotated proof screenshot to: {output_path}")
+        return (target_x, target_y), target_box
+    else:
+        logger.warning(f"Target '{target_icon_prompt}' not detected on screen.")
+        return None, None
+
+
+def run_automation_loop(target_icon: str = "Notepad"):
+    """
+    Executes full 10-post live desktop automation loop for target application.
+    """
+    logger.info("==================================================================")
+    logger.info(f"Starting Live Vision-Based Automation Loop for Target: '{target_icon}'")
     logger.info("==================================================================")
     
     posts = fetch_posts(count=10)
     
+    import time
+    logger.info(">>> Minimize all windows and show your desktop NOW! Starting capture in 3 seconds...")
+    for i in range(3, 0, -1):
+        logger.info(f"    {i}...")
+        time.sleep(1)
+
     for idx, post in enumerate(posts, 1):
         logger.info(f"\n--- Processing Post {idx}/10 (ID: {post.id}) ---")
         
-        if sim_mode:
-            # Simulation desktop capture
-            screenshot = create_synthetic_desktop_image((200, 200), "Notepad")
+        prepare_clean_desktop()
+        time.sleep(0.5)
+        screenshot = capture_desktop_screenshot()
+            
+        # Ground requested icon dynamically using ScreenSeekeR
+        res = visual_search(f"{target_icon} shortcut icon", screenshot)
+        if res and res[0] is not None:
+            (target_x, target_y), target_box, _ = res
+            logger.info(f"Grounded '{target_icon}' Icon at Screen Pixel ({target_x}, {target_y})")
         else:
-            # Live desktop screenshot capture
-            screenshot = capture_desktop_screenshot()
-            
-        # Ground Notepad icon using ScreenSeekeR
-        (target_x, target_y), target_box, _ = visual_search("Notepad shortcut icon", screenshot)
-        logger.info(f"Grounded Notepad Icon at Screen Pixel ({target_x}, {target_y})")
+            logger.warning(f"Could not ground '{target_icon}' shortcut icon. Using fallback center (200, 200).")
+            (target_x, target_y) = (200, 200)
         
-        if not sim_mode:
-            # Launch application by double clicking grounded center coordinates
-            launch_application_at((target_x, target_y))
-            
-        # Write post and save to Desktop/tjm-project/post_{id}.txt
+        launch_application_at((target_x, target_y))
         saved_file = save_post_to_notepad(post)
         logger.info(f"Completed Post {idx}/10 -> {saved_file}")
         
@@ -107,22 +138,22 @@ def run_automation_loop(sim_mode: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Vision-Based Desktop Automation with ScreenSeekeR Grounding")
-    parser.add_argument("--generate-screenshots", action="store_true", help="Generate 3 deliverable annotated screenshots (Top-Left, Bottom-Right, Center)")
-    parser.add_argument("--run-automation", action="store_true", help="Run full 10-post JSONPlaceholder automation loop")
-    parser.add_argument("--sim", action="store_true", help="Run in simulation mode (headless / cross-platform friendly)")
+    parser = argparse.ArgumentParser(description="Vision-Based Desktop Automation with Dynamic & Generalized Icon Selection")
+    parser.add_argument("--target-icon", type=str, default="Notepad", help="Target icon/application prompt (e.g. 'Notepad', 'Recycle Bin', 'File Explorer', 'Chrome')")
+    parser.add_argument("--ground-icon", type=str, default=None, help="Dynamically ground ANY custom desktop icon specified by user prompt")
+    parser.add_argument("--generate-screenshots", action="store_true", help="Generate deliverable annotated screenshots (Top-Left, Bottom-Right, Center)")
+    parser.add_argument("--run-automation", action="store_true", help="Run full 10-post JSONPlaceholder live automation loop")
     
     args = parser.parse_args()
     
-    if not args.generate_screenshots and not args.run_automation:
-        # Default behavior: run screenshot generation + automation test
-        generate_annotated_deliverables()
-        run_automation_loop(sim_mode=True)
+    if args.ground_icon:
+        ground_custom_user_icon(args.ground_icon)
+    elif args.generate_screenshots:
+        generate_annotated_deliverables(target_icon=args.target_icon)
     else:
-        if args.generate_screenshots:
-            generate_annotated_deliverables()
-        if args.run_automation:
-            run_automation_loop(sim_mode=args.sim)
+        # Default behavior or --run-automation: execute live 10-post automation loop
+        run_automation_loop(target_icon=args.target_icon)
 
 if __name__ == "__main__":
     main()
+

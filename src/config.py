@@ -16,7 +16,9 @@ TARGET_APP_NAME = "Notepad"
 # OpenRouter & LLM API Settings
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-2024-11-20")
+PLANNER_MODEL = os.getenv("PLANNER_MODEL", "google/gemini-3-flash-preview")
+GROUNDER_MODEL = os.getenv("GROUNDER_MODEL", "google/gemini-3-flash-preview")
+OPENROUTER_MODEL = PLANNER_MODEL
 
 # ScreenSeekeR Paper Hyperparameters (arXiv:2504.07981)
 SIGMA = 0.3                # Gaussian centrality scoring variance parameter (Equation 1 in paper)

@@ -113,10 +113,8 @@ def visual_search(
     depth: int = 0
 ) -> Tuple[Tuple[int, int], Tuple[int, int, int, int], List[Dict[str, Any]]]:
     """
-    Algorithm 1: ScreenSeekeR Visual Search
-    Recursively narrows search area and grounds target UI element.
-    Returns:
-      ((global_x, global_y), global_bounding_box, search_trace_logs)
+    Algorithm 1: ScreenSeekeR Visual Search (arXiv:2504.07981)
+    Recursively narrows search area and grounds target UI element across candidate patches.
     """
     width, height = image.size
     trace = []
@@ -125,33 +123,37 @@ def visual_search(
     if depth >= D_MAX or (width * height) <= (S_MIN * S_MIN):
         local_box, confidence = direct_grounding(instruction, image)
         
-        # Calculate center in patch coordinates
-        lx1, ly1, lx2, ly2 = local_box
-        lcx = (lx1 + lx2) // 2
-        lcy = (ly1 + ly2) // 2
-        
-        # Project to global screen coordinates
-        gx, gy = project_crop_to_screen((lcx, lcy), (viewport_offset[0], viewport_offset[1], viewport_offset[0] + width, viewport_offset[1] + height))
-        gbx = (
-            viewport_offset[0] + lx1,
-            viewport_offset[1] + ly1,
-            viewport_offset[0] + lx2,
-            viewport_offset[1] + ly2
-        )
-        
-        trace.append({
-            "depth": depth,
-            "action": "Direct Grounding",
-            "patch_size": (width, height),
-            "local_box": local_box,
-            "global_center": (gx, gy)
-        })
-        
-        return (gx, gy), gbx, trace
+        if local_box is not None and confidence > 0.0:
+            lx1, ly1, lx2, ly2 = local_box
+            lcx = (lx1 + lx2) // 2
+            lcy = (ly1 + ly2) // 2
+            
+            gx, gy = project_crop_to_screen((lcx, lcy), (viewport_offset[0], viewport_offset[1], viewport_offset[0] + width, viewport_offset[1] + height))
+            gbx = (
+                viewport_offset[0] + lx1,
+                viewport_offset[1] + ly1,
+                viewport_offset[0] + lx2,
+                viewport_offset[1] + ly2
+            )
+            
+            trace.append({
+                "depth": depth,
+                "action": "Direct Grounding Success",
+                "patch_size": (width, height),
+                "local_box": local_box,
+                "global_center": (gx, gy)
+            })
+            return (gx, gy), gbx, trace
+        else:
+            # Target not found in this sub-patch
+            return None, None, trace
 
     # Step 1: Position Inference (Planner)
     candidates = position_inference(instruction, image)
     trace.append({"depth": depth, "action": "Position Inference", "candidates_count": len(candidates)})
+
+    if not candidates:
+        candidates = [(0, 0, width, height)]
 
     # Step 2: Box Dilation
     dilated_candidates = box_dilation(candidates, (width, height))
@@ -160,18 +162,42 @@ def visual_search(
     scores = [gaussian_centrality_score(box, candidates) for box in dilated_candidates]
     nms_candidates = non_maximum_suppression(dilated_candidates, scores)
 
-    # Step 4: Recursive Crop & Ground on top patch
-    best_candidate = nms_candidates[0] if nms_candidates else (0, 0, width, height)
-    
-    cropped_patch = crop_sub_image(image, best_candidate)
-    new_viewport = (viewport_offset[0] + best_candidate[0], viewport_offset[1] + best_candidate[1])
-    
-    trace.append({
-        "depth": depth,
-        "action": "Crop Patch",
-        "crop_box": best_candidate,
-        "new_viewport": new_viewport
-    })
+    # Step 4: Iterative candidate patch evaluation loop (Algorithm 1 lines 14-20)
+    for candidate_box in nms_candidates:
+        cropped_patch = crop_sub_image(image, candidate_box)
+        new_viewport = (viewport_offset[0] + candidate_box[0], viewport_offset[1] + candidate_box[1])
+        
+        trace.append({
+            "depth": depth,
+            "action": "Evaluate Candidate Patch",
+            "crop_box": candidate_box,
+            "new_viewport": new_viewport
+        })
 
-    # Recursive call
-    return visual_search(instruction, cropped_patch, viewport_offset=new_viewport, depth=depth + 1)
+        res_center, res_box, sub_trace = visual_search(instruction, cropped_patch, viewport_offset=new_viewport, depth=depth + 1)
+        trace.extend(sub_trace)
+        
+        if res_center is not None:
+            return res_center, res_box, trace
+
+    # If direct patch grounding failed for sub-patches (depth > 0), return None to signal parent search loop
+    if depth > 0:
+        return None, None, trace
+
+    # Root level fallback (depth == 0): If no patch yielded direct grounding, return top candidate box center
+    if nms_candidates:
+        top_box = nms_candidates[0]
+        gx = viewport_offset[0] + (top_box[0] + top_box[2]) // 2
+        gy = viewport_offset[1] + (top_box[1] + top_box[3]) // 2
+        gbx = (
+            viewport_offset[0] + top_box[0],
+            viewport_offset[1] + top_box[1],
+            viewport_offset[0] + top_box[2],
+            viewport_offset[1] + top_box[3]
+        )
+        logger.warning(f"Direct patch grounding inconclusive. Utilizing Planner candidate region center: ({gx}, {gy})")
+        return (gx, gy), gbx, trace
+
+    logger.warning("Target element not detected on screen.")
+    return None, None, trace
+

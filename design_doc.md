@@ -88,15 +88,38 @@ Standard MLLMs fail on high-resolution GUI grounding (accuracy drops to ~18.9% o
 
 ---
 
-## 4. Key Trade-offs & Failure Modes Analysis
+## 4. Honest Failure Cases & Linux OS Limitations Analysis
 
-| Scenario / Challenge | Failure Risk | ScreenSeekeR Mitigation Strategy |
-| :--- | :--- | :--- |
-| **Unexpected Pop-up Windows** | High for template matching; pop-up covers icon | Planner re-evaluates screen context; if icon is occluded, selects alternate candidate or dismisses pop-up. |
-| **Dark / Light Desktop Themes** | High for pixel matching; colors change | Semantic visual grounding relies on icon geometry & text labels ("Notepad") rather than raw RGB color masks. |
-| **Desktop Icon Size Variations** | Medium; small vs large desktop icons | Box dilation expands search bounds; cropped sub-image search scales naturally regardless of icon size. |
-| **Multiple Identical Text Documents** | Medium; wrong text file opened | Prompting planner to identify the specific shortcut arrow overlay / "Notepad" application launcher icon. |
-| **API Latency vs Accuracy** | High latency if searching recursively | Search depth capped at $D_{max} = 2$. High confidence candidate skips secondary recursion. |
+### 4.1 System Failure Modes Matrix
+
+| Scenario / Challenge | Failure Risk | Failure Root Cause | ScreenSeekeR Mitigation & Fallback Strategy |
+| :--- | :--- | :--- | :--- |
+| **Complete Desktop Occlusion** | High | Maximize application windows (browsers, IDEs) cover wallpaper desktop shortcut icons. | Automation pre-step executes window minimization (`Super+D` / `wmctrl`) to clear wallpaper before screenshot capture. |
+| **Missing Target Desktop Icon** | High | User has not created desktop shortcut icon for Notepad / Text Editor on wallpaper or launcher dock. | `visual_search` logs target missing warning and falls back to default grid center coordinate rather than hanging pipeline. |
+| **Visual Ambiguity (Open Editor vs Icon)** | Medium | MLLMs can mistakenly ground open document text area or title bar if an open window matches text prompt. | Negative prompting in Grounder/Planner strictly instructs model to ignore open application bodies and target wallpaper shortcuts. |
+| **Dark / Light Desktop Themes** | Low | RGB color shifts across themes. | Grounding relies on semantic geometry & text labels ("Notepad") rather than rigid pixel template matching. |
+| **HiDPI / Fractional Display Scaling** | Medium | OS scaling (125%, 150%) shifts physical pixel bounds relative to reported logical resolution. | Normalizes screenshot aspect ratio to standard 1920x1080 bounds prior to crop projection. |
+| **API Rate Limits / Model Latency** | Medium | OpenRouter API downtime or high round-trip network latency (~2s per patch). | Caps search depth at $D_{max} = 2$ and uses target-aware fallback contour verification. |
+
+---
+
+### 4.2 Linux Platform & Display Server Limitations
+
+Operating vision-based computer control on modern Linux distributions (e.g. Ubuntu 22.04 / 24.04 LTS) introduces OS-level constraints:
+
+1. **Wayland Display Server Security Isolation**:
+   - Modern Wayland sessions (`XDG_SESSION_TYPE=wayland`) deliberately restrict unprivileged applications from querying global screen pixels or injecting global input events across other windows.
+   - Traditional screen capture libraries (`mss`, `PIL.ImageGrab`) return completely black images on Wayland. *Mitigation*: Our system uses the Linux `XDG Desktop Portal D-Bus API` (`org.freedesktop.portal.Screenshot`) for native 1080p frame buffer capture.
+   - Input tools (`xdotool`, `PyAutoGUI`) only operate on XWayland surfaces.
+
+2. **GTK4 Tabbed Single-Instance Text Editors**:
+   - Ubuntu's default `gnome-text-editor` uses GTK4 single-instance architecture. If a user modifies text without saving, pressing `Alt+F4` prompts a blocking modal dialog ("Save changes?").
+   - *Mitigation*: The automation orchestrator forces process cleanup (`pkill -f gnome-text-editor`) between post loop iterations to reset clean desktop state.
+
+3. **PyAutoGUI Python Module Initialization**:
+   - On Linux environments without `python3-tk` installed, importing `pyautogui` invokes `MouseInfo` which throws a `SystemExit` exception, terminating Python execution without triggering standard `except Exception` blocks.
+   - *Mitigation*: Our codebase includes a safe PyAutoGUI loader catching `BaseException` and providing module stubs so live execution is fail-safe.
+
 
 ---
 
