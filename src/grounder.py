@@ -14,7 +14,7 @@ import numpy as np
 import cv2
 import httpx
 
-from src.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, GROUNDER_MODEL
+from src.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, GROUNDER_MODEL, GOOGLE_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ def direct_grounding(instruction: str, patch_image: Image.Image) -> Tuple[Option
     """
     width, height = patch_image.size
     
-    # 1. Primary: Use MLLM direct patch grounding for exact target matching
-    if OPENROUTER_API_KEY:
+    # 1. Primary: If GOOGLE_API_KEY or OPENROUTER_API_KEY is set, use MLLM patch grounding
+    if GOOGLE_API_KEY or OPENROUTER_API_KEY:
         mllm_box = _mllm_patch_grounding(instruction, patch_image)
         if mllm_box:
             return mllm_box, 0.98
@@ -43,20 +43,23 @@ def direct_grounding(instruction: str, patch_image: Image.Image) -> Tuple[Option
 
 
 def _mllm_patch_grounding(instruction: str, patch_image: Image.Image) -> Optional[Tuple[int, int, int, int]]:
-    """Uses OpenRouter MLLM to return exact pixel bounding box of target shortcut icon within patch."""
+    """Uses Google Gemini API / OpenRouter MLLM to return exact pixel bounding box of target shortcut icon within patch."""
     width, height = patch_image.size
     try:
         buffered = io.BytesIO()
         patch_image.save(buffered, format="JPEG", quality=90)
         base64_img = base64.b64encode(buffered.getvalue()).decode("utf-8")
         
-        prompt = f"""Pinpoint the exact bounding box of the DESKTOP SHORTCUT ICON or LAUNCHER ICON for "{instruction}" inside this image patch.
+        prompt = f"""Pinpoint the exact bounding box of the DESKTOP SHORTCUT ICON or LAUNCHER ICON for "{instruction}" inside this image patch on an Ubuntu Linux Desktop.
 
-CRITICAL RULES FOR ACCURACY:
-1. Target MUST be a desktop shortcut icon (on wallpaper) or taskbar/dock application launcher icon matching "{instruction}".
-2. DO NOT ground title bars, menu bars, text lines, or bodies of already open application windows (e.g. open Text Editor or document window).
-3. If ONLY an open application window or random text is present without the actual shortcut icon, return {{"box_1000": null}}.
-4. If the target shortcut icon is present, return ONLY valid JSON:
+UBUNTU ACCURACY RULES:
+1. Environment is Ubuntu Linux (Gnome desktop).
+2. "Notepad" is labeled "Text Editor" (or "Notepad") showing a white sheet/pencil icon.
+3. "Word" is labeled "LibreOffice Writer" (blue document icon).
+4. Target MUST be a desktop shortcut icon (on wallpaper) or taskbar/dock application launcher icon matching "{instruction}".
+5. DO NOT ground title bars, menu bars, text lines, or bodies of already open application windows (e.g. open Text Editor or document window).
+6. If ONLY an open application window or random text is present without the actual shortcut icon, return {{"box_1000": null}}.
+7. If the target shortcut icon is present, return ONLY valid JSON:
 ```json
 {{
   "box_1000": [xmin, ymin, xmax, ymax]
@@ -65,52 +68,96 @@ CRITICAL RULES FOR ACCURACY:
 where coordinates are scaled from 0 to 1000.
 """
 
-        payload = {
-            "model": GROUNDER_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
+        content = None
+
+        # 1. Try Direct Google Gemini API if GOOGLE_API_KEY is available
+        if GOOGLE_API_KEY:
+            gemini_models = [GEMINI_MODEL, "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+            gemini_models = list(dict.fromkeys(gemini_models))
+
+            for model_name in gemini_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+                payload = {
+                    "contents": [
                         {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
+                            "parts": [
+                                {"text": prompt},
+                                {
+                                    "inline_data": {
+                                        "mime_type": "image/jpeg",
+                                        "data": base64_img
+                                    }
+                                }
+                            ]
                         }
-                    ]
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.0,
+                        "response_mime_type": "application/json"
+                    }
                 }
-            ],
-            "temperature": 0.0,
-            "max_tokens": 100
-        }
+                try:
+                    with httpx.Client(timeout=10.0) as client:
+                        resp = client.post(url, json=payload)
+                        if resp.status_code == 200:
+                            res_json = resp.json()
+                            candidates_data = res_json.get("candidates", [])
+                            if candidates_data:
+                                parts = candidates_data[0].get("content", {}).get("parts", [])
+                                if parts and "text" in parts[0]:
+                                    content = parts[0]["text"]
+                                    break
+                except Exception:
+                    pass
 
-        headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": "https://github.com/automatic-cursor-notebad",
-            "Content-Type": "application/json"
-        }
+        # 2. Try OpenRouter API if Google API was not used or failed
+        if not content and OPENROUTER_API_KEY:
+            payload = {
+                "model": GROUNDER_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
+                            }
+                        ]
+                    }
+                ],
+                "temperature": 0.0,
+                "max_tokens": 100
+            }
 
-        with httpx.Client(timeout=10.0) as client:
-            resp = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                content = res_json['choices'][0]['message']['content']
-                
-                # Parse box_1000
-                start_idx = content.find("{")
-                end_idx = content.rfind("}") + 1
-                if start_idx != -1 and end_idx != -1:
-                    data = json.loads(content[start_idx:end_idx])
-                    b = data.get("box_1000")
-                    if isinstance(b, list) and len(b) == 4:
-                        xmin, ymin, xmax, ymax = b
-                        # Validate sanity of returned box
-                        if xmax > xmin and ymax > ymin:
-                            return (
-                                int(xmin * width / 1000.0),
-                                int(ymin * height / 1000.0),
-                                int(xmax * width / 1000.0),
-                                int(ymax * height / 1000.0)
-                            )
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://github.com/automatic-cursor-notebad",
+                "Content-Type": "application/json"
+            }
+
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    content = res_json['choices'][0]['message']['content']
+
+        # Parse box_1000
+        if content:
+            start_idx = content.find("{")
+            end_idx = content.rfind("}") + 1
+            if start_idx != -1 and end_idx != -1:
+                data = json.loads(content[start_idx:end_idx])
+                b = data.get("box_1000")
+                if isinstance(b, list) and len(b) == 4:
+                    xmin, ymin, xmax, ymax = b
+                    if xmax > xmin and ymax > ymin:
+                        return (
+                            int(xmin * width / 1000.0),
+                            int(ymin * height / 1000.0),
+                            int(xmax * width / 1000.0),
+                            int(ymax * height / 1000.0)
+                        )
     except Exception as e:
         logger.debug(f"MLLM patch grounding exception: {e}")
         

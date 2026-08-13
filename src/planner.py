@@ -11,9 +11,10 @@ from typing import List, Tuple, Dict, Any
 from PIL import Image
 import httpx
 
-from src.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, PLANNER_MODEL, SCREEN_RESOLUTION
+from src.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, PLANNER_MODEL, GOOGLE_API_KEY, GEMINI_MODEL, SCREEN_RESOLUTION
 
 logger = logging.getLogger(__name__)
+
 
 def encode_image_to_base64(image: Image.Image) -> str:
     """Converts PIL Image to base64 JPEG string."""
@@ -21,18 +22,69 @@ def encode_image_to_base64(image: Image.Image) -> str:
     image.save(buffered, format="JPEG", quality=85)
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
+
 def _get_visual_description(instruction: str) -> str:
-    """Provides visual feature hints for common desktop icons to maximize MLLM vision accuracy."""
+    """Provides visual feature hints for Ubuntu Linux desktop icons to maximize MLLM vision accuracy."""
     inst_lower = instruction.lower()
     if any(k in inst_lower for k in ["text", "editor", "notepad", "gedit"]):
-        return f'"{instruction}" (Look for a DESKTOP SHORTCUT ICON on the desktop wallpaper background showing a document/notepad symbol or text label "Text Editor" / "Notepad")'
-    elif any(k in inst_lower for k in ["chrome", "browser", "web"]):
-        return f'"{instruction}" (Look for a circular red, yellow, green, blue browser icon on the desktop or dock)'
+        return f'"{instruction}" (Ubuntu Linux Text Editor / Notepad: Look for a desktop wallpaper shortcut icon or dock icon showing a white document sheet with a pencil/notepad symbol, labeled "Text Editor" or "Notepad")'
+    elif any(k in inst_lower for k in ["word", "libreoffice", "writer", "doc"]):
+        return f'"{instruction}" (Ubuntu LibreOffice Writer: Look for a blue/white document icon labeled "LibreOffice Writer" or "Writer")'
+    elif any(k in inst_lower for k in ["excel", "calc", "spreadsheet"]):
+        return f'"{instruction}" (Ubuntu LibreOffice Calc: Look for a green spreadsheet icon labeled "LibreOffice Calc" or "Calc")'
+    elif any(k in inst_lower for k in ["chrome", "browser", "web", "firefox"]):
+        return f'"{instruction}" (Web Browser: Look for a Firefox orange fox icon or Google Chrome circular logo icon on desktop/dock)'
     elif any(k in inst_lower for k in ["terminal", "cmd", "bash"]):
-        return f'"{instruction}" (Look for a dark square terminal icon on the desktop or dock)'
-    elif any(k in inst_lower for k in ["folder", "explorer", "file"]):
-        return f'"{instruction}" (Look for a yellow folder shortcut icon on the desktop wallpaper)'
+        return f'"{instruction}" (Ubuntu Terminal: Look for a dark square icon with prompt symbol ">_" labeled "Terminal")'
+    elif any(k in inst_lower for k in ["folder", "explorer", "file", "files"]):
+        return f'"{instruction}" (Ubuntu Files / Nautilus: Look for a purple or yellow folder icon labeled "Files" or "Home")'
     return f'"{instruction}"'
+
+
+def _call_google_gemini_api(prompt: str, base64_image: str, width: int, height: int) -> List[Tuple[int, int, int, int]]:
+    """Directly invokes Google Gemini API via official endpoint using GOOGLE_API_KEY."""
+    gemini_models = [GEMINI_MODEL, "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    # De-duplicate while preserving order
+    gemini_models = list(dict.fromkeys(gemini_models))
+
+    for model_name in gemini_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.0,
+                "response_mime_type": "application/json"
+            }
+        }
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.post(url, json=payload)
+                if response.status_code == 200:
+                    res_json = response.json()
+                    candidates_data = res_json.get("candidates", [])
+                    if candidates_data:
+                        parts = candidates_data[0].get("content", {}).get("parts", [])
+                        if parts and "text" in parts[0]:
+                            content = parts[0]["text"]
+                            candidates = _parse_planner_response(content, width, height)
+                            if candidates:
+                                logger.info(f"Successfully grounded '{prompt[:30]}...' using Direct Google Gemini model '{model_name}'.")
+                                return candidates
+        except Exception as e:
+            logger.warning(f"Direct Google Gemini API call failed for model '{model_name}': {e}")
+    return []
 
 
 def position_inference(instruction: str, image: Image.Image) -> List[Tuple[int, int, int, int]]:
@@ -42,22 +94,19 @@ def position_inference(instruction: str, image: Image.Image) -> List[Tuple[int, 
     [x_min, y_min, x_max, y_max] in absolute 1920x1080 pixel coordinates.
     """
     width, height = image.size
-    
-    if not OPENROUTER_API_KEY:
-        logger.warning("OPENROUTER_API_KEY not set. Using heuristic desktop grid planner.")
-        return _heuristic_position_inference(image)
-        
     base64_image = encode_image_to_base64(image)
-    
     visual_desc = _get_visual_description(instruction)
     
-    prompt = f"""You are a GUI Desktop Grounding Planner.
-Instruction: Locate the exact target desktop shortcut icon or application launcher icon {visual_desc} on the desktop.
+    prompt = f"""You are a GUI Desktop Grounding Planner operating on an Ubuntu Linux Desktop environment.
+Instruction: Locate the target desktop shortcut icon or application launcher icon {visual_desc} on the Ubuntu desktop screen.
 
-CRITICAL RULES:
-1. Target MUST be a desktop shortcut icon (located on the wallpaper surface) or a taskbar/dock launcher icon.
-2. DO NOT select open window title bars, window bodies, text areas, or headers of already open applications (such as an open Text Editor or browser window).
-3. Identify candidate regions [xmin, ymin, xmax, ymax] enclosing ONLY the desktop shortcut icon or launcher button.
+UBUNTU LINUX DESKTOP MAPPINGS & RULES:
+1. Environment: Ubuntu Linux (Gnome desktop).
+2. "Notepad" in Ubuntu is called "Text Editor" (gnome-text-editor/gedit) with a document/pencil shortcut icon.
+3. "Word" in Ubuntu is called "LibreOffice Writer" (blue document icon).
+4. Target MUST be a desktop shortcut icon (on the wallpaper surface) or taskbar/dock application launcher button.
+5. DO NOT select open application window bodies, text areas, or title bars of already open windows.
+6. Identify candidate regions [xmin, ymin, xmax, ymax] enclosing ONLY the target desktop shortcut icon or dock button.
 
 Return 1 to 3 candidate bounding box areas [xmin, ymin, xmax, ymax] (scaled 0 to 1000) for "{instruction}".
 Return ONLY valid JSON:
@@ -70,54 +119,59 @@ Return ONLY valid JSON:
 ```
 """
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "HTTP-Referer": "https://github.com/automatic-cursor-notebad",
-        "Content-Type": "application/json"
-    }
+    # 1. Primary: If GOOGLE_API_KEY is available, use direct Google Gemini SDK / REST API
+    if GOOGLE_API_KEY:
+        gemini_candidates = _call_google_gemini_api(prompt, base64_image, width, height)
+        if gemini_candidates:
+            return gemini_candidates
 
-    # Model fallback chain: Gemini 3 Flash Preview -> Gemini 2.5 Flash -> Qwen 2.5 VL -> GPT-4o
-    candidate_models = [PLANNER_MODEL, "google/gemini-3-flash-preview", "google/gemini-2.5-flash", "qwen/qwen-2.5-vl-72b-instruct", "openai/gpt-4o"]
-    # De-duplicate while preserving order
-    candidate_models = list(dict.fromkeys(candidate_models))
-
-    for model in candidate_models:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.0,
-            "max_tokens": 100
+    # 2. Secondary: If OpenRouter API key is set, use OpenRouter API
+    if OPENROUTER_API_KEY:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://github.com/automatic-cursor-notebad",
+            "Content-Type": "application/json"
         }
 
-        try:
-            with httpx.Client(timeout=15.0) as client:
-                response = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
-                response.raise_for_status()
-                res_json = response.json()
-                
-                content = res_json['choices'][0]['message']['content']
-                candidates = _parse_planner_response(content, width, height)
-                if candidates:
-                    logger.info(f"Successfully grounded '{instruction}' using model '{model}'.")
-                    return candidates
-        except Exception as e:
-            logger.warning(f"Position Inference call failed for model '{model}': {e}. Trying fallback model...")
+        candidate_models = [PLANNER_MODEL, "google/gemini-3-flash-preview", "google/gemini-2.5-flash", "qwen/qwen-2.5-vl-72b-instruct", "openai/gpt-4o"]
+        candidate_models = list(dict.fromkeys(candidate_models))
+
+        for model in candidate_models:
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "temperature": 0.0,
+                "max_tokens": 100
+            }
+
+            try:
+                with httpx.Client(timeout=15.0) as client:
+                    response = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
+                    response.raise_for_status()
+                    res_json = response.json()
+                    
+                    content = res_json['choices'][0]['message']['content']
+                    candidates = _parse_planner_response(content, width, height)
+                    if candidates:
+                        logger.info(f"Successfully grounded '{instruction}' using OpenRouter model '{model}'.")
+                        return candidates
+            except Exception as e:
+                logger.warning(f"Position Inference call failed for model '{model}': {e}. Trying fallback model...")
 
     logger.error(f"All MLLM models failed for position inference. Falling back to heuristic grid search.")
-        
     return _heuristic_position_inference(image)
 
 
