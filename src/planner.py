@@ -43,7 +43,7 @@ def _get_visual_description(instruction: str) -> str:
 
 def _call_google_gemini_api(prompt: str, base64_image: str, width: int, height: int) -> List[Tuple[int, int, int, int]]:
     """Directly invokes Google Gemini API via official endpoint using GOOGLE_API_KEY."""
-    gemini_models = [GEMINI_MODEL, "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    gemini_models = [GEMINI_MODEL, "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     # De-duplicate while preserving order
     gemini_models = list(dict.fromkeys(gemini_models))
 
@@ -100,13 +100,20 @@ def position_inference(instruction: str, image: Image.Image) -> List[Tuple[int, 
     prompt = f"""You are a GUI Desktop Grounding Planner operating on an Ubuntu Linux Desktop environment.
 Instruction: Locate the target desktop shortcut icon or application launcher icon {visual_desc} on the Ubuntu desktop screen.
 
+MANDATORY SPATIAL SCANNING INSTRUCTIONS:
+Scan the entire 1920x1080 display systematically across all four quadrants:
+1. Top-Left Quadrant [0..500, 0..500]: Check for desktop shortcuts & top-left launcher dock buttons.
+2. Top-Right Quadrant [500..1000, 0..500]: Check desktop wallpaper shortcuts & top bar controls.
+3. Bottom-Left Quadrant [0..500, 500..1000]: Check wallpaper surface & bottom dock area.
+4. Bottom-Right Quadrant [500..1000, 500..1000]: Thoroughly inspect wallpaper surface for isolated shortcut icons.
+
 UBUNTU LINUX DESKTOP MAPPINGS & RULES:
 1. Environment: Ubuntu Linux (Gnome desktop).
 2. "Notepad" in Ubuntu is called "Text Editor" (gnome-text-editor/gedit) with a document/pencil shortcut icon.
-3. "Word" in Ubuntu is called "LibreOffice Writer" (blue document icon).
-4. Target MUST be a desktop shortcut icon (on the wallpaper surface) or taskbar/dock application launcher button.
+3. Target MUST be the specific desktop shortcut icon labeled "Text Editor" / "Notepad" (or pinned dock launcher icon).
+4. DO NOT select the 9-dots grid "Show Applications" launcher button at the bottom-left of the Ubuntu dock bar.
 5. DO NOT select open application window bodies, text areas, or title bars of already open windows.
-6. Identify candidate regions [xmin, ymin, xmax, ymax] enclosing ONLY the target desktop shortcut icon or dock button.
+6. Identify candidate regions [xmin, ymin, xmax, ymax] enclosing ONLY the target desktop shortcut icon or dock button for "{instruction}".
 
 Return 1 to 3 candidate bounding box areas [xmin, ymin, xmax, ymax] (scaled 0 to 1000) for "{instruction}".
 Return ONLY valid JSON:
@@ -231,13 +238,12 @@ def _parse_planner_response(response_text: str, width: int, height: int) -> List
 
         boxes = []
         for b in raw_boxes:
-            c1, c2, c3, c4 = b
-            # If c1 < c2, c1 is xmin, c2 is ymin. If c1 > c2 and c1 > 300, c1 is ymin.
-            # Convert to absolute pixel bounds: (xmin, ymin, xmax, ymax)
-            if c1 > c2 and c1 > 300: # ymin, xmin, ymax, xmax format
-                ymin, xmin, ymax, xmax = c1, c2, c3, c4
-            else: # xmin, ymin, xmax, ymax format
-                xmin, ymin, xmax, ymax = c1, c2, c3, c4
+            xmin, ymin, xmax, ymax = b
+            # Ensure proper min/max ordering without swapping X and Y
+            if xmin > xmax:
+                xmin, xmax = xmax, xmin
+            if ymin > ymax:
+                ymin, ymax = ymax, ymin
 
             pixel_box = (
                 max(0, min(int(xmin * width / 1000.0), width - 1)),

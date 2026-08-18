@@ -15,7 +15,7 @@ TARGET_APP_NAME = "Notepad"
 
 # Google GenAI & OpenRouter API Settings
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 PLANNER_MODEL = os.getenv("PLANNER_MODEL", "google/gemini-3-flash-preview")

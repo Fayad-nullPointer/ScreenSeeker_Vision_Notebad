@@ -72,7 +72,7 @@ def ground_custom_user_icon(target_icon_prompt: str):
     logger.info("==================================================================")
     
     import time
-    logger.info(">>> Minimize all windows and show your desktop NOW! Capturing in 3 seconds...")
+    logger.info(">>> Minimize all windows and show your desktop NOW! Starting capture in 3 seconds...")
     for i in range(3, 0, -1):
         logger.info(f"    {i}...")
         time.sleep(1)
@@ -114,7 +114,6 @@ def run_automation_loop(target_icon: str = "Notepad"):
     for idx, post in enumerate(posts, 1):
         logger.info(f"\n--- Processing Post {idx}/10 (ID: {post.id}) ---")
         
-        prepare_clean_desktop()
         time.sleep(0.5)
         screenshot = capture_desktop_screenshot()
             

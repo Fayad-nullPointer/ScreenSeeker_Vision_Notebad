@@ -72,20 +72,46 @@ def fetch_posts(count: int = 10) -> List[Post]:
 
 def prepare_clean_desktop() -> None:
     """
-    Minimizes or closes open windows to expose desktop wallpaper & shortcut icons
-    prior to screenshot capture.
+    Automatically triggers Ctrl+Alt+D / Super+D shortcuts to minimize all open windows
+    and reveal the clean desktop wallpaper & shortcut icons prior to screenshot capture.
     """
     import subprocess
-    logger.info("Preparing clean desktop state...")
+    logger.info("Automatically minimizing open windows to reveal clean desktop...")
+    
+    # 1. Try Ubuntu GNOME default toggle desktop shortcut: Ctrl+Alt+D
+    try:
+        subprocess.run(["xdotool", "key", "Ctrl+Alt+d"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+        
+    # 2. Try Super+D / super+d shortcut
     try:
         subprocess.run(["xdotool", "key", "Super+d"], capture_output=True, timeout=2)
     except Exception:
         pass
+
+    try:
+        subprocess.run(["xdotool", "key", "super+d"], capture_output=True, timeout=2)
+    except Exception:
+        pass
+
+    # 3. Try wmctrl show desktop mode
     try:
         subprocess.run(["wmctrl", "-k", "on"], capture_output=True, timeout=2)
     except Exception:
         pass
-    time.sleep(0.5)
+
+    # 4. Try PyAutoGUI hotkeys
+    if _pyautogui is not None:
+        try:
+            _pyautogui.hotkey('ctrl', 'alt', 'd')
+        except BaseException:
+            try:
+                _pyautogui.hotkey('win', 'd')
+            except BaseException:
+                pass
+                
+    time.sleep(0.8)
 
 
 def launch_application_at(target_center: tuple[int, int]) -> None:

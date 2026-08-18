@@ -50,16 +50,14 @@ def _mllm_patch_grounding(instruction: str, patch_image: Image.Image) -> Optiona
         patch_image.save(buffered, format="JPEG", quality=90)
         base64_img = base64.b64encode(buffered.getvalue()).decode("utf-8")
         
-        prompt = f"""Pinpoint the exact bounding box of the DESKTOP SHORTCUT ICON or LAUNCHER ICON for "{instruction}" inside this image patch on an Ubuntu Linux Desktop.
+        prompt = f"""Pinpoint the exact bounding box of the specific application shortcut icon labeled "{instruction}" (or "Text Editor" / "Notepad") inside this image patch on an Ubuntu Linux Desktop.
 
-UBUNTU ACCURACY RULES:
-1. Environment is Ubuntu Linux (Gnome desktop).
-2. "Notepad" is labeled "Text Editor" (or "Notepad") showing a white sheet/pencil icon.
-3. "Word" is labeled "LibreOffice Writer" (blue document icon).
-4. Target MUST be a desktop shortcut icon (on wallpaper) or taskbar/dock application launcher icon matching "{instruction}".
-5. DO NOT ground title bars, menu bars, text lines, or bodies of already open application windows (e.g. open Text Editor or document window).
-6. If ONLY an open application window or random text is present without the actual shortcut icon, return {{"box_1000": null}}.
-7. If the target shortcut icon is present, return ONLY valid JSON:
+UBUNTU GROUNDING ACCURACY RULES:
+1. Target MUST be the specific shortcut icon containing the text label or logo for "{instruction}".
+2. DO NOT ground the 9-dots grid "Show Applications" launcher button at the bottom-left of the dock bar.
+3. DO NOT ground empty wallpaper regions, window title bars, text bodies, or unrelated app icons.
+4. If the image patch does NOT contain the shortcut icon specifically labeled "{instruction}", return {{"box_1000": null}}.
+5. If the target shortcut icon for "{instruction}" is present, return ONLY valid JSON:
 ```json
 {{
   "box_1000": [xmin, ymin, xmax, ymax]
@@ -72,7 +70,7 @@ where coordinates are scaled from 0 to 1000.
 
         # 1. Try Direct Google Gemini API if GOOGLE_API_KEY is available
         if GOOGLE_API_KEY:
-            gemini_models = [GEMINI_MODEL, "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+            gemini_models = [GEMINI_MODEL, "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.0-flash"]
             gemini_models = list(dict.fromkeys(gemini_models))
 
             for model_name in gemini_models:
